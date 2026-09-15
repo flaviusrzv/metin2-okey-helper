@@ -118,8 +118,13 @@ export function firstEmptySlot(state) {
 }
 
 // addCard: place into the first empty slot. Returns slot index used, or -1
-// if board is full.
+// if board is full or the card is already in play (on the board or consumed).
+// Duplicate prevention: the game has 24 unique cards; a card on the board or
+// in the consumed set cannot be entered again. The palette greys these out,
+// but keyboard input bypasses the palette, so the guard must be here too.
 export function addCard(state, cardId) {
+  if (state.consumed.has(cardId)) return -1;
+  if (state.board.includes(cardId)) return -1;
   const idx = firstEmptySlot(state);
   if (idx < 0) return -1;
   setSlot(state, idx, cardId);

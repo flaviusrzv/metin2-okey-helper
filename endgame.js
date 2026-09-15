@@ -50,9 +50,9 @@ function bitsOf(mask) {
   return out;
 }
 export function popcount(m) {
-  let n = 0;
-  while (m) { m &= m - 1; n++; }
-  return n;
+  m = m - ((m >>> 1) & 0x55555555);
+  m = (m & 0x33333333) + ((m >>> 2) & 0x33333333);
+  return (((m + (m >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 }
 
 // ---- precomputed scores for all C(24,3) triples ----

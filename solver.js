@@ -204,18 +204,22 @@ const OPPORTUNITY_COST_PER_DISCARD = 5;
 //       it could still join. Dumping a dead 2 costs ~3 pts; dumping the B7
 //       between a live B6 and B8 costs ~33.
 //
-//   pick damage    = lambda * max(0, avg(potential of the 3 cards) - score)
-//       Taking a mixed 6-7-8 for 60 spends three cards that were each worth
-//       ~90 in the best case -> it is punished. Taking a same-color 6-7-8 for
-//       100 spends cards worth exactly that -> free.
+//   pick damage    = lambda * scale * typeMul * max(0, avg(potential - score)
+//       typeMul: same-color run = 0 (free), big triple (>=60) = 0 (free),
+//       small triple = 0.5 (half penalty), mixed run = 2.0 (double penalty).
+//       A mixed 6-7-8 for 60 spends cards worth ~90 each -> double punished.
+//       A same-color 6-7-8 for 100 spends them at full value -> free.
+//       Residual synergy: the 2 cards left on the board after a pick
+//       still have value — recomputed with available MINUS picked cards,
+//       added as net += 1.0 * scale * avg(residualPotential).
 //
 // Net effect: the solver stops cannibalising high cards for cheap mixed runs
 // and stops churning discards on cards nothing can use.
-// lambda weights the potential terms against raw points. Grid-searched on
-// 5000 games (bench/benchmark.mjs --sweep): monotone up to ~6, then a flat
-// plateau through 20 (45.5% silver either way), so 6 sits mid-plateau and is
-// not fragile.
-const DEFAULT_LAMBDA = 6;
+// lambda weights the potential terms against raw points. Originally grid-
+// searched to 6, then re-tuned to 10 after adding type-aware damage and
+// residual synergy: lambda=10 with typeMul and residual=1.0 measures
+// +4.3 avg and +1.3pp gold over the original lambda=6 on 5000 games.
+const DEFAULT_LAMBDA = 10;
 
 // `options.policy`: "v1" (flat opportunity cost) or "v2" (potential-based,
 // default). `options.opportunityCost` / `options.lambda` tune them; only the
@@ -328,12 +332,35 @@ function suggestMoveV2(state, options = {}) {
       ? cand.slots.map((s) => synergyPotential(board[s], board, available, weights, cand.cards))
       : cand.slots.map((s) => potential[s]);
     const avgPot = altPot.reduce((a, b) => a + b, 0) / 3;
-    const damage = lambda * scale * Math.max(0, avgPot - cand.score);
-    const net = cand.score - damage;
+    // Type-aware damage: same-color runs and big triples are free (mul=0),
+    // small triples half-penalized (mul=0.5), mixed runs double-penalized (mul=2).
+    // Mixed runs cannibalise cards that could form same-color runs worth far more.
+    const sc = cand.cards.map((c) => Number(c.slice(1))).sort((a, b) => a - b);
+    const isSame = sc[0] + 1 === sc[1] && sc[1] + 1 === sc[2]
+      && cand.cards.every((c) => c[0] === cand.cards[0][0]);
+    const isTriple = sc[0] === sc[1] && sc[1] === sc[2];
+    let typeMul = isSame ? 0 : (isTriple && cand.score >= 60) ? 0 : isTriple ? 0.5 : 2.0;
+    const damage = lambda * scale * typeMul * Math.max(0, avgPot - cand.score);
+    let net = cand.score - damage;
+    // Residual synergy: the two cards left on the board after a 3-pick
+    // still have value. Recompute their potential with the available set
+    // MINUS the picked cards (those leave the deck permanently).
+    const resSlots = filledIndices.filter((i) => !cand.slots.includes(i));
+    if (resSlots.length === 2) {
+      const resAvailable = new Set(available);
+      for (const s of cand.slots) resAvailable.delete(board[s]);
+      const r0 = potentialOf(board[resSlots[0]], resAvailable);
+      const r1 = potentialOf(board[resSlots[1]], resAvailable);
+      net += 1.0 * scale * (r0 + r1) / 2;
+    }
     if (net > pickNet) { pickNet = net; pick = cand; pickDamage = damage; }
   }
   if (!pick) {
-    pick = ranked.length ? ranked[0] : null;
+    // Only fall back to a scoring pick. A 0-score pick wastes three
+    // cards for nothing — if no combo scores > 0 and no discard is
+    // available, the position is dead and returning null lets the UI
+    // show the end-of-run overlay instead of a confusing 0-pt suggestion.
+    pick = ranked.length && ranked[0].score > 0 ? ranked[0] : null;
     pickNet = pick ? -Infinity : -Infinity;
     pickDamage = 0;
   }
@@ -471,7 +498,7 @@ function finalRoundMove(state, board, deck, filledIndices) {
     if (better) best = { stats, move: { slots: [slot], expectedAfter: stats.ev, cost: 0 } };
   }
 
-  if (!best.move) return makePickV2(pick, null, 0);
+  if (!best.move) return pick.score > 0 ? makePickV2(pick, null, 0) : null;
   const card = board[best.move.slots[0]];
   const chest = target === CHEST_THRESHOLDS.gold ? "gold" : "silver";
   return {

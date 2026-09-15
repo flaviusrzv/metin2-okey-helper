@@ -9,8 +9,10 @@
 //
 // The cutoff is a time budget, not a quality judgement. Exact solving costs
 // ~2.8x per extra card still in play (measured in bench/endgame-timing.mjs):
-// 12 cards is ~200 ms, 13 is ~630 ms, 16 is 22 s. Twelve keeps every
-// suggestion under a fifth of a second.
+// 13 cards is ~538 ms, 14 is ~1.9 s, 16 is 22 s. Fourteen runs in the worker
+// thread (search-worker.js), so the UI stays responsive — the first exact
+// turn costs ~2 s and every later one is free (sub-positions share the
+// memo).
 //
 // In a normal game (about 4 picks and 11 discards) the exact phase begins
 // around the seventh action, so it covers every decision that actually settles
@@ -22,7 +24,7 @@ import { makeAvailableSet, bestAchievable } from "./potential.js";
 import { suggestMoveRollout } from "./rollout.js";
 import { suggestMove } from "./solver.js";
 
-export const EXACT_MAX_CARDS = 13;
+export const EXACT_MAX_CARDS = 14;
 
 // Per-game scratchpad. The exact solver's table stays valid for the rest of a
 // game — every later position is a sub-position of the first one solved — so

@@ -66,7 +66,8 @@ self.onmessage = (e) => {
   let move = null;
   let outlook = null;
   try {
-    move = suggest(state, { ...(msg.options || {}), cache });
+    const workerOpts = msg.options || {};
+    move = suggest(state, { ...workerOpts, cache });
     // The end-of-run check needs the same exact table this search just built,
     // and it is the one other place that can trigger a full solve. Computing it
     // here costs nothing extra and keeps the main thread free of the only other

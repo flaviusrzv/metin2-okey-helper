@@ -133,10 +133,10 @@ const DEFAULT_ALLOCATE = "halving";
 //              Stays true almost to the end, so this hunts gold all game.
 //   likely   — some candidate move still reaches gold in at least
 //              AUTO_GOLD_MIN of its rollouts. Gives up on gold earlier and
-//              banks silver instead.
+//              banks silver instead, reducing bronze risk.
 //
 // Both are measured in bench/benchmark.mjs; the default is set from that.
-export const AUTO_GOLD_MIN = 0.10;
+export const AUTO_GOLD_MIN = 0.20;
 
 function autoWantsGold(state, all, mode) {
   if (mode === "feasible") {
@@ -254,7 +254,6 @@ export function suggestMoveRollout(state, options = {}) {
   for (let i = 0; i < N; i++) seeds.push((options.seed ?? 0x9E3779B9) + i * 0x85EBCA6B);
 
   const objective = options.objective ?? "auto";
-
   // One exact-solver table for the whole decision: the leaf positions of every
   // playout are sub-positions of the same card set, so they share heavily and
   // only the first few cost anything.

@@ -5,7 +5,7 @@
 import {
   createState, addCard, discardSlot, confirmPick, undo, resetState,
   usedCardSet, autoFillBoardFromDeck, deckRemaining, BOARD_SIZE, HAND_SIZE,
-  chestForScore,
+  chestForScore, scoreHand,
 } from "./game.js";
 import { suggest, createPolicyCache, chestOutlook } from "./policy.js";
 import { applyToDOM, setLang, onLangChange, t } from "./i18n.js";
@@ -108,6 +108,9 @@ function onSlotClick(slotIndex) {
   const card = state.board[slotIndex];
   if (!card) return;
 
+  // Track size before toggle to distinguish "add 3rd card" from "replace a card".
+  const sizeBefore = pickedSlots.size;
+
   // Toggle selection. Replacing the oldest pick when the user already has 3
   // selected feels nicer than ignoring the click.
   if (pickedSlots.has(slotIndex)) {
@@ -119,6 +122,22 @@ function onSlotClick(slotIndex) {
     pickedSlots.delete(first);
     pickedSlots.add(slotIndex);
   }
+
+  // Auto-confirm: when the 3rd card is added (sizeBefore < 3 -> size === 3)
+  // AND the 3 cards form a valid combo, confirm immediately.
+  // Do NOT auto-confirm on replacement (sizeBefore === 3 -> still 3).
+  if (sizeBefore < HAND_SIZE && pickedSlots.size === HAND_SIZE) {
+    const pickedCards = [...pickedSlots].map((i) => state.board[i]);
+    const { score } = scoreHand(pickedCards);
+    if (score > 0) {
+      const r = confirmPick(state, [...pickedSlots]);
+      pickedSlots.clear();
+      if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel(r) }));
+      else toast(t("noCombo"));
+    } else {
+      toast(t("noCombo"));
+    }
+  }
   refresh();
 }
 
@@ -126,6 +145,10 @@ function onSlotClick(slotIndex) {
 // stays greyed in the palette for the rest of this game.
 function onSlotRightClick(slotIndex) {
   if (!state.board[slotIndex]) return;
+  if (deckRemaining(state).length === 0) {
+    toast(t("cannotDiscardDeckEmpty"));
+    return;
+  }
   pickedSlots.delete(slotIndex);
   discardSlot(state, slotIndex);
   refresh();
@@ -136,6 +159,12 @@ function onConfirm() {
     toast(t("select3"));
     return;
   }
+  const pickedCards = [...pickedSlots].map((i) => state.board[i]);
+  const { score } = scoreHand(pickedCards);
+  if (score === 0) {
+    toast(t("noCombo"));
+    return;
+  }
   const r = confirmPick(state, [...pickedSlots]);
   pickedSlots.clear();
   if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel(r) }));
@@ -144,10 +173,18 @@ function onConfirm() {
 }
 
 function onAcceptSuggestion() {
+  // Keyboard Space reaches this handler even while the button is disabled.
+  // Keep the keyboard path subject to the same strong-answer gate as a click.
+  if (els.acceptSuggestionBtn?.disabled) return;
   const move = lastSuggestion ?? suggest(state, { cache: policyCache });
   if (!move) { toast(t("addCardsFirst")); return; }
   if (move.kind === "pick") {
-    pickedSlots = new Set(move.slots);
+    // Auto-confirm: the solver only suggests valid picks, so confirm directly
+    // instead of just selecting — makes Space symmetric with discard.
+    pickedSlots.clear();
+    const r = confirmPick(state, move.slots);
+    if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel(r) }));
+    else toast(t("noCombo"));
     refresh();
     return;
   }
@@ -164,6 +201,7 @@ function onAcceptSuggestion() {
 function onUndo() {
   if (!undo(state)) { toast(t("nothingUndo")); return; }
   pickedSlots.clear();
+  clearPendingColor();
   refresh();
 }
 
@@ -193,6 +231,7 @@ function onReset() {
   if (searchWorker) searchWorker.postMessage({ type: "reset" });
   overlayDismissed = false;
   hideRunOverlay();
+  clearPendingColor();
   refresh();
 }
 
@@ -233,8 +272,13 @@ function refresh() {
   const waiting = awaitingCards();
   const move = waiting ? null : computeSuggestion();
   lastSuggestion = move;
-  const suggested = move ? new Set(move.slots) : null;
-  const suggestionKind = move ? move.kind : null;
+  // Only highlight cards (glow/badge) when the strong answer is ready.
+  // The quick heuristic can disagree with the worker (~40% of positions),
+  // and showing a DISCARD highlight that then flips to PICK is jarring.
+  // Text suggestion is always shown (with .pending opacity when not strong).
+  const showHints = suggestionCache.strong;
+  const suggested = (showHints && move) ? new Set(move.slots) : null;
+  const suggestionKind = showHints ? (move ? move.kind : null) : null;
 
   renderBoard(els.board, state, {
     picked: pickedSlots, suggested, suggestionKind, onSlotClick, awaiting: waiting,
@@ -253,11 +297,13 @@ function refresh() {
   const missing = state.board.filter((c) => !c).length;
   els.suggestionNote.textContent = waiting
     ? t("awaitingCards", { n: missing })
-    : (move ? adviceText(move) : t("suggestionPlaceholder"));
+    : (suggestionCache.strong && move ? adviceText(move)
+      : (suggestionCache.strong ? t("noMovesPossible")
+      : t("calculatingSuggestion")));
   els.suggestionNote.classList.toggle("awaiting", waiting);
   els.suggestionNote.classList.toggle("pending", !waiting && !!move && !suggestionCache.strong);
   document.body.classList.toggle("awaiting-cards", waiting);
-  els.acceptSuggestionBtn.disabled = !move;
+  els.acceptSuggestionBtn.disabled = !move || !suggestionCache.strong;
   if (move && move.kind === "discard") {
     els.acceptSuggestionBtn.textContent = t("discardCards", { n: move.slots.length });
   } else {
@@ -313,6 +359,10 @@ function getWorker() {
       pendingKey = null;
       if (msg.type === "error") {
         console.warn("[okey] search failed, keeping the quick answer:", msg.message);
+        // Mark as strong so card hints show from the quick answer —
+        // better wrong highlights than no highlights.
+        suggestionCache.strong = true;
+        refresh();
         return;
       }
       if (positionKey() !== msg.key) return;
@@ -325,6 +375,13 @@ function getWorker() {
       workerBroken = true;
       searchWorker = null;
       pendingKey = null;
+      // A runtime worker failure has the same fallback contract as an explicit
+      // search error: reveal the quick answer instead of leaving the UI stuck on
+      // "Calculating..." with a disabled button.
+      if (suggestionCache.key === positionKey() && suggestionCache.move) {
+        suggestionCache.strong = true;
+      }
+      refresh();
     };
   } catch {
     workerBroken = true;
@@ -339,6 +396,16 @@ function computeSuggestion() {
   // Instant answer so the UI has something to draw right now.
   const quick = suggest(state, { cache: policyCache, mode: "heuristic" });
   suggestionCache = { key, move: quick, strong: false };
+
+  // Dead position: the heuristic found no move at all, which means no valid
+  // combo and no discard is possible. The strong search would return null
+  // too, so skip the worker round-trip and mark strong immediately — this
+  // lets checkRunFinished show the end-of-run overlay without making the
+  // user wait ~380ms of "Calculating…" on a position that has no answer.
+  if (quick === null) {
+    suggestionCache = { key, move: null, strong: true, outlook: null };
+    return null;
+  }
 
   if (pendingKey !== key) {
     pendingKey = key;
@@ -497,9 +564,11 @@ function recordGlobalCompletion(tier) {
 // Refresh while the tab is actually being looked at. Four GETs a minute is far
 // inside the host's rate limit and keeps the panel alive during a session.
 fetchAllGlobalCounts();
-setInterval(() => {
+const globalCountInterval = setInterval(() => {
   if (document.visibilityState === "visible") fetchAllGlobalCounts();
 }, 60_000);
+// Stop polling when the page is unloaded so the interval does not leak.
+window.addEventListener("pagehide", () => clearInterval(globalCountInterval));
 
 
 // ---------- advice wording ----------
@@ -541,7 +610,7 @@ document.querySelectorAll(".lang-btn").forEach((btn) => {
 });
 // Static text is swapped by i18n itself; the dynamic parts (suggestion,
 // button labels, session numbers) need a re-render.
-onLangChange(() => refresh());
+onLangChange(() => { clearPendingColor(); refresh(); });
 applyToDOM();
 
 // ---------- modals (imprint / privacy) ----------
@@ -596,6 +665,20 @@ if (els.likeBtn) {
 // ---------- keyboard ----------
 
 let pendingColor = null;
+let pendingColorTimer = 0;
+// Auto-expire the color prefix so a stale R/B/Y press minutes ago does
+// not silently combine with a number pressed in a completely different
+// context (after reset, mode switch, etc.).
+const PENDING_COLOR_TIMEOUT = 2000;
+function setPendingColor(k) {
+  pendingColor = k;
+  clearTimeout(pendingColorTimer);
+  pendingColorTimer = setTimeout(() => { pendingColor = null; }, PENDING_COLOR_TIMEOUT);
+}
+function clearPendingColor() {
+  pendingColor = null;
+  clearTimeout(pendingColorTimer);
+}
 document.addEventListener("keydown", (e) => {
   if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
 
@@ -605,10 +688,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " ")         { e.preventDefault(); onAcceptSuggestion(); return; }
 
   const k = e.key.toUpperCase();
-  if (k === "R" || k === "B" || k === "Y") { pendingColor = k; return; }
+  if (k === "R" || k === "B" || k === "Y") { setPendingColor(k); return; }
   if (pendingColor && /^[1-8]$/.test(e.key)) {
     onPaletteClick(`${pendingColor}${e.key}`);
-    pendingColor = null;
+    clearPendingColor();
   }
 });
 
@@ -648,6 +731,7 @@ function onPracticeToggle() {
   document.body.classList.toggle("practice-on", practiceMode);
   // Toggling clears selection — the board is about to mutate either way.
   pickedSlots.clear();
+  clearPendingColor();
   refresh();
 }
 
