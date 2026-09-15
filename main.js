@@ -126,17 +126,25 @@ function onSlotClick(slotIndex) {
   // Auto-confirm: when the 3rd card is added (sizeBefore < 3 -> size === 3)
   // AND the 3 cards form a valid combo, confirm immediately.
   // Do NOT auto-confirm on replacement (sizeBefore === 3 -> still 3).
+  //
+  // Gated behind suggestionCache.strong && lastSuggestion?.kind === "pick":
+  // auto-confirm only when the worker has already answered AND agrees that
+  // picking (not discarding) is the right move. If the solver recommends a
+  // discard, the cards stay selected so the user can review and override.
   if (sizeBefore < HAND_SIZE && pickedSlots.size === HAND_SIZE) {
     const pickedCards = [...pickedSlots].map((i) => state.board[i]);
     const { score } = scoreHand(pickedCards);
-    if (score > 0) {
+    if (score === 0) {
+      toast(t("noCombo"));
+    } else if (suggestionCache.strong && lastSuggestion?.kind === "pick") {
+      // Solver agrees: picking is correct here — auto-confirm immediately.
       const r = confirmPick(state, [...pickedSlots]);
       pickedSlots.clear();
-      if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel(r) }));
+      if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel({ ...r, cards: r.hand }) }));
       else toast(t("noCombo"));
-    } else {
-      toast(t("noCombo"));
     }
+    // else: score > 0 but solver not yet ready or recommends discard —
+    // leave the 3 cards highlighted for the user to confirm explicitly.
   }
   refresh();
 }
@@ -167,7 +175,7 @@ function onConfirm() {
   }
   const r = confirmPick(state, [...pickedSlots]);
   pickedSlots.clear();
-  if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel(r) }));
+  if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel({ ...r, cards: r.hand }) }));
   else toast(t("noCombo"));
   refresh();
 }
@@ -183,7 +191,7 @@ function onAcceptSuggestion() {
     // instead of just selecting — makes Space symmetric with discard.
     pickedSlots.clear();
     const r = confirmPick(state, move.slots);
-    if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel(r) }));
+    if (r.gained > 0) toast(t("scored", { gained: r.gained, label: handLabel({ ...r, cards: r.hand }) }));
     else toast(t("noCombo"));
     refresh();
     return;
