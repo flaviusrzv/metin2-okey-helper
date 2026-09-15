@@ -339,7 +339,7 @@ function suggestMoveV2(state, options = {}) {
     const isSame = sc[0] + 1 === sc[1] && sc[1] + 1 === sc[2]
       && cand.cards.every((c) => c[0] === cand.cards[0][0]);
     const isTriple = sc[0] === sc[1] && sc[1] === sc[2];
-    let typeMul = isSame ? 0 : (isTriple && cand.score >= 60) ? 0 : isTriple ? 0.5 : 2.0;
+    const typeMul = isSame ? 0 : (isTriple && cand.score >= 60) ? 0 : isTriple ? 0.5 : 2.0;
     const damage = lambda * scale * typeMul * Math.max(0, avgPot - cand.score);
     let net = cand.score - damage;
     // Residual synergy: the two cards left on the board after a 3-pick
@@ -361,7 +361,7 @@ function suggestMoveV2(state, options = {}) {
     // available, the position is dead and returning null lets the UI
     // show the end-of-run overlay instead of a confusing 0-pt suggestion.
     pick = ranked.length && ranked[0].score > 0 ? ranked[0] : null;
-    pickNet = pick ? -Infinity : -Infinity;
+    // pickNet stays at -Infinity (its initial value) — no reassignment needed.
     pickDamage = 0;
   }
   const pickScore = pick ? pick.score : 0;
@@ -373,7 +373,16 @@ function suggestMoveV2(state, options = {}) {
     const ev = evAfterSingleDiscard(kept, deck);
     if (ev === null) continue;
     const cost = lambda * scale * (potential[slot] / 3);
-    const net = ev - cost;
+    // Residual synergy (symmetric with the pick path): the cards that stay on
+    // the board after the discard still have potential — they can still join
+    // future combos. Without this term the pick path gets a bonus the discard
+    // path does not, which biases the decision toward picking even when
+    // discarding has higher expected chest value.
+    const resAvailDiscard = new Set(available);
+    resAvailDiscard.delete(board[slot]);
+    const keptPots = kept.map((c) => potentialOf(c, resAvailDiscard));
+    const discardResidual = 1.0 * scale * keptPots.reduce((a, b) => a + b, 0) / kept.length;
+    const net = ev - cost + discardResidual;
     if (bestDiscard === null || net > bestDiscard.net) {
       bestDiscard = { slots: [slot], expectedAfter: ev, cost, net };
     }
