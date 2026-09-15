@@ -136,7 +136,7 @@ const DEFAULT_ALLOCATE = "halving";
 //              banks silver instead, reducing bronze risk.
 //
 // Both are measured in bench/benchmark.mjs; the default is set from that.
-export const AUTO_GOLD_MIN = 0.20;
+export const AUTO_GOLD_MIN = 0.10;
 
 function autoWantsGold(state, all, mode) {
   if (mode === "feasible") {
